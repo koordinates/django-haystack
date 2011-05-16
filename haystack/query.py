@@ -442,9 +442,7 @@ class SearchQuerySet(object):
     
     def more_like_this(self, model_instance):
         """Finds similar results to the object passed in."""
-        clone = self._clone()
-        clone.query.more_like_this(model_instance)
-        return clone
+        return self.query.more_like_this(model_instance)
     
     def facet_counts(self):
         """
@@ -453,8 +451,7 @@ class SearchQuerySet(object):
         This will cause the query to execute and should generally be used when
         presenting the data.
         """
-        clone = self._clone()
-        return clone.query.get_facet_counts()
+        return self.query.get_facet_counts()
     
     def spelling_suggestion(self, preferred_query=None):
         """
@@ -466,8 +463,7 @@ class SearchQuerySet(object):
         This will cause the query to execute and should generally be used when
         presenting the data.
         """
-        clone = self._clone()
-        return clone.query.get_spelling_suggestion(preferred_query)
+        return self.query.get_spelling_suggestion(preferred_query)
     
     
     # Utility methods.
