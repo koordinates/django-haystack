@@ -132,13 +132,26 @@ class SearchQuerySet(object):
             if not self._fill_cache(current_position, current_position + ITERATOR_LOAD_PER_QUERY):
                 raise StopIteration
     
+    def _load_model_objects(self, model, pks):
+        try:
+            return self.site.get_index(model).read_queryset().in_bulk(pks)
+        except NotRegistered:
+            self.log.warning("Model not registered with search site '%s.%s'." % (self.app_label, self.model_name))
+            # Revert to old behaviour
+            return model._default_manager.in_bulk(pks)
+    
     def _fill_cache(self, start, end):
         # Tell the query where to start from and how many we'd like.
         self.query._reset()
         self.query.set_limits(start, end)
         results = self.query.get_results()
         
+        if start is None:
+            start = 0
+        
         if results == None or len(results) == 0:
+            # trim missing stuff from the result cache
+            self._result_cache = self._result_cache[:start]
             return False
         
         # Setup the full cache now that we know how many results there are.
@@ -150,55 +163,74 @@ class SearchQuerySet(object):
         if len(self._result_cache) == 0:
             self._result_cache = [None for i in xrange(self.query.get_count())]
         
-        if start is None:
-            start = 0
+        fill_start, fill_end = start, end
+        if fill_end is None:
+            fill_end = self.query.get_count()
+        cache_start = fill_start
         
-        if end is None:
-            end = self.query.get_count()
-        
-        # Check if we wish to load all objects.
-        if self._load_all:
-            original_results = []
-            models_pks = {}
-            loaded_objects = {}
+        stop = False
+        while not stop:
             
-            # Remember the search position for each result so we don't have to resort later.
-            for result in results:
-                original_results.append(result)
-                models_pks.setdefault(result.model, []).append(result.pk)
-            
-            # Load the objects for each model in turn.
-            for model in models_pks:
-                try:
-                    loaded_objects[model] = self.site.get_index(model).read_queryset().in_bulk(models_pks[model])
-                except NotRegistered:
-                    self.log.warning("Model not registered with search site '%s.%s'." % (self.app_label, self.model_name))
-                    # Revert to old behaviour
-                    loaded_objects[model] = model._default_manager.in_bulk(models_pks[model])
-
-        to_cache = []
-        
-        for result in results:
+            # Check if we wish to load all objects.
             if self._load_all:
-                # We have to deal with integer keys being cast from strings
-                model_objects = loaded_objects.get(result.model, {})
-                if not result.pk in model_objects:
-                    try:
-                        result.pk = int(result.pk)
-                    except ValueError:
-                        pass
-                try:
-                    result._object = model_objects[result.pk]
-                except KeyError:
-                    # The object was either deleted since we indexed or should
-                    # be ignored; fail silently.
-                    self._ignored_result_count += 1
-                    continue
+                original_results = []
+                models_pks = {}
+                loaded_objects = {}
+                
+                # Remember the search position for each result so we don't have to resort later.
+                for result in results:
+                    original_results.append(result)
+                    models_pks.setdefault(result.model, []).append(result.pk)
+                
+                # Load the objects for each model in turn.
+                for model in models_pks:
+                    loaded_objects[model] = self._load_model_objects(model, models_pks[model])
+    
+            to_cache = []
             
-            to_cache.append(result)
+            for result in results:
+                if self._load_all:
+                    # We have to deal with integer keys being cast from strings
+                    model_objects = loaded_objects.get(result.model, {})
+                    if not result.pk in model_objects:
+                        try:
+                            result.pk = int(result.pk)
+                        except ValueError:
+                            pass
+                    try:
+                        result._object = model_objects[result.pk]
+                    except KeyError:
+                        # The object was either deleted since we indexed or should
+                        # be ignored; fail silently.
+                        self._ignored_result_count += 1
+                        
+                        # avoid an unfilled None at the end of the result cache
+                        self._result_cache.pop()
+                        continue
+                
+                to_cache.append(result)
         
-        # Assign by slice.
-        self._result_cache[start:start + len(to_cache)] = to_cache
+            # Assign by slice.
+            self._result_cache[cache_start:cache_start + len(to_cache)] = to_cache
+            
+            if None in self._result_cache[start:end]:
+                fill_start = fill_end
+                fill_end += ITERATOR_LOAD_PER_QUERY
+                cache_start += len(to_cache)
+                
+                # Tell the query where to start from and how many we'd like.
+                self.query._reset()
+                self.query.set_limits(fill_start, fill_end)
+                results = self.query.get_results()
+                
+                if results == None or len(results) == 0:
+                    # trim missing stuff from the result cache
+                    self._result_cache = self._result_cache[:cache_start]
+                    break
+                
+            else:
+                break
+            
         return True
     
     
@@ -506,117 +538,25 @@ class EmptySearchQuerySet(SearchQuerySet):
 class RelatedSearchQuerySet(SearchQuerySet):
     """
     A variant of the SearchQuerySet that can handle `load_all_queryset`s.
-    
-    This is predominantly different in the `_fill_cache` method, as it is
-    far less efficient but needs to fill the cache before it to maintain
-    consistency.
     """
     _load_all_querysets = {}
     _result_cache = []
     
-    def _cache_is_full(self):
-        return len(self._result_cache) >= len(self)
-    
-    def _manual_iter(self):
-        # If we're here, our cache isn't fully populated.
-        # For efficiency, fill the cache as we go if we run out of results.
-        # Also, this can't be part of the __iter__ method due to Python's rules
-        # about generator functions.
-        current_position = 0
-        current_cache_max = 0
-        
-        while True:
-            current_cache_max = len(self._result_cache)
-            
-            while current_position < current_cache_max:
-                yield self._result_cache[current_position]
-                current_position += 1
-            
-            if self._cache_is_full():
-                raise StopIteration
-            
-            # We've run out of results and haven't hit our limit.
-            # Fill more of the cache.
-            start = current_position + self._ignored_result_count
-            
-            if not self._fill_cache(start, start + ITERATOR_LOAD_PER_QUERY):
-                raise StopIteration
-    
-    def _fill_cache(self, start, end):
-        # Tell the query where to start from and how many we'd like.
-        self.query._reset()
-        self.query.set_limits(start, end)
-        results = self.query.get_results()
-        
-        if results == None or len(results) == 0:
-            return False
-        
-        # Setup the full cache now that we know how many results there are.
-        # We need the ``None``s as placeholders to know what parts of the
-        # cache we have/haven't filled.
-        # Using ``None`` like this takes up very little memory. In testing,
-        # an array of 100,000 ``None``s consumed less than .5 Mb, which ought
-        # to be an acceptable loss for consistent and more efficient caching.
-        if len(self._result_cache) == 0:
-            self._result_cache = [None for i in xrange(self.query.get_count())]
-        
-        if start is None:
-            start = 0
-        
-        if end is None:
-            end = self.query.get_count()
-        
-        # Check if we wish to load all objects.
-        if self._load_all:
-            original_results = []
-            models_pks = {}
-            loaded_objects = {}
-            
-            # Remember the search position for each result so we don't have to resort later.
-            for result in results:
-                original_results.append(result)
-                models_pks.setdefault(result.model, []).append(result.pk)
-            
-            # Load the objects for each model in turn.
-            for model in models_pks:
-                if model in self._load_all_querysets:
-                    # Use the overriding queryset.
-                    loaded_objects[model] = self._load_all_querysets[model].in_bulk(models_pks[model])
-                else:
-                    # Check the SearchIndex for the model for an override.
-                    try:
-                        index = self.site.get_index(model)
-                        qs = index.load_all_queryset()
-                        loaded_objects[model] = qs.in_bulk(models_pks[model])
-                    except NotRegistered:
-                        # The model returned doesn't seem to be registered with
-                        # the current site. We should silently fail and populate
-                        # nothing for those objects.
-                        loaded_objects[model] = []
-        
-        to_cache = []
-        
-        for result in results:
-            if self._load_all:
-                # We have to deal with integer keys being cast from strings; if this
-                # fails we've got a character pk.
-                try:
-                    result.pk = int(result.pk)
-                except ValueError:
-                    pass
-                try:
-                    result._object = loaded_objects[result.model][result.pk]
-                except (KeyError, IndexError):
-                    # The object was either deleted since we indexed or should
-                    # be ignored; fail silently.
-                    self._ignored_result_count += 1
-                    continue
-            
-            to_cache.append(result)
-        
-        # Assign by slice.
-        self._result_cache[start:start + len(to_cache)] = to_cache
-        return True
+    def _load_model_objects(self, model, pks):
+        if model in self._load_all_querysets:
+            # Use the overriding queryset.
+            return self._load_all_querysets[model].in_bulk(pks)
+        else:
+            # Check the SearchIndex for the model for an override.
+            try:
+                index = self.site.get_index(model)
+                qs = index.load_all_queryset()
+                return qs.in_bulk(pks)
+            except NotRegistered:
+                # The model returned doesn't seem to be registered with
+                # the current site. We should silently fail and populate
+                # nothing for those objects.
+                return {}
     
     def load_all_queryset(self, model, queryset):
         """
