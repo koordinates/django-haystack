@@ -547,8 +547,17 @@ class RelatedSearchQuerySet(SearchQuerySet):
         self.query.set_limits(start, end)
         results = self.query.get_results()
         
-        if len(results) == 0:
+        if results == None or len(results) == 0:
             return False
+        
+        # Setup the full cache now that we know how many results there are.
+        # We need the ``None``s as placeholders to know what parts of the
+        # cache we have/haven't filled.
+        # Using ``None`` like this takes up very little memory. In testing,
+        # an array of 100,000 ``None``s consumed less than .5 Mb, which ought
+        # to be an acceptable loss for consistent and more efficient caching.
+        if len(self._result_cache) == 0:
+            self._result_cache = [None for i in xrange(self.query.get_count())]
         
         if start is None:
             start = 0
@@ -584,8 +593,7 @@ class RelatedSearchQuerySet(SearchQuerySet):
                         # nothing for those objects.
                         loaded_objects[model] = []
         
-        if len(results) + len(self._result_cache) < len(self) and len(results) < ITERATOR_LOAD_PER_QUERY:
-            self._ignored_result_count += ITERATOR_LOAD_PER_QUERY - len(results)
+        to_cache = []
         
         for result in results:
             if self._load_all:
@@ -603,51 +611,11 @@ class RelatedSearchQuerySet(SearchQuerySet):
                     self._ignored_result_count += 1
                     continue
             
-            self._result_cache.append(result)
+            to_cache.append(result)
         
+        # Assign by slice.
+        self._result_cache[start:start + len(to_cache)] = to_cache
         return True
-    
-    def __getitem__(self, k):
-        """
-        Retrieves an item or slice from the set of results.
-        """
-        if not isinstance(k, (slice, int, long)):
-            raise TypeError
-        assert ((not isinstance(k, slice) and (k >= 0))
-                or (isinstance(k, slice) and (k.start is None or k.start >= 0)
-                    and (k.stop is None or k.stop >= 0))), \
-                "Negative indexing is not supported."
-        
-        # Remember if it's a slice or not. We're going to treat everything as
-        # a slice to simply the logic and will `.pop()` at the end as needed.
-        if isinstance(k, slice):
-            is_slice = True
-            start = k.start
-            
-            if k.stop is not None:
-                bound = int(k.stop)
-            else:
-                bound = None
-        else:
-            is_slice = False
-            start = k
-            bound = k + 1
-        
-        # We need check to see if we need to populate more of the cache.
-        if len(self._result_cache) <= 0 or not self._cache_is_full():
-            try:
-                while len(self._result_cache) < bound and not self._cache_is_full():
-                    current_max = len(self._result_cache) + self._ignored_result_count
-                    self._fill_cache(current_max, current_max + ITERATOR_LOAD_PER_QUERY)
-            except StopIteration:
-                # There's nothing left, even though the bound is higher.
-                pass
-        
-        # Cache should be full enough for our needs.
-        if is_slice:
-            return self._result_cache[start:bound]
-        else:
-            return self._result_cache[start]
     
     def load_all_queryset(self, model, queryset):
         """
