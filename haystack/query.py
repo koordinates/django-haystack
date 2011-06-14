@@ -70,7 +70,7 @@ class SearchQuerySet(object):
 
         # This needs to return the actual number of hits, not what's in the cache.
         # Returning <0 is a Bad Thing
-        return max([self._result_count - self._ignored_result_count, 0])
+        return max(self._result_count - self._ignored_result_count, 0)
 
     def __iter__(self):
         if self._cache_is_full():
