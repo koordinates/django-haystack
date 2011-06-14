@@ -731,11 +731,6 @@ class RelatedSearchQuerySet(SearchQuerySet):
         return clone
 
     def _clone(self, klass=None):
-        if klass is None:
-            klass = self.__class__
-
-        query = self.query._clone()
-        clone = klass(site=self.site, query=query)
-        clone._load_all = self._load_all
+        clone = super(RelatedSearchQuerySet, self)._clone(klass=klass)
         clone._load_all_querysets = self._load_all_querysets
         return clone
