@@ -5,7 +5,7 @@ from django.utils.encoding import force_unicode
 from haystack.constants import ID, DJANGO_CT, DJANGO_ID
 from haystack.fields import *
 from haystack.utils import get_identifier, get_facet_field_name
-
+import threading
 
 class DeclarativeMetaclass(type):
     def __new__(cls, name, bases, attrs):
@@ -84,6 +84,7 @@ class SearchIndex(object):
             import haystack
             self.backend = haystack.backend.SearchBackend()
         
+        self._local_data = threading.local()
         self.prepared_data = None
         content_fields = []
         
@@ -93,6 +94,13 @@ class SearchIndex(object):
         
         if not len(content_fields) == 1:
             raise SearchFieldError("An index must have one (and only one) SearchField with document=True.")
+    
+    
+    def _get_prepared_data(self):
+        return self._local_data.prepared_data
+    def _set_prepared_data(self, value):
+        self._local_data.prepared_data = value
+    prepared_data = property(_get_prepared_data, _set_prepared_data)
     
     def _setup_save(self, model):
         """A hook for controlling what happens when the registered model is saved."""
