@@ -215,8 +215,8 @@ class Command(AppCommand):
             total = qs.count()
             
             if self.verbosity >= 1:
-                print "Indexing %d %s." % (total, smart_str(model._meta.verbose_name_plural))
-            
+                print "Indexing %d %s." % (total, smart_str(unicode(model._meta.verbose_name_plural)))
+
             pks_seen = set([smart_str(pk) for pk in qs.values_list('pk', flat=True)])
             
             if self.workers > 0:
