@@ -9,7 +9,7 @@ from django.utils import six
 
 from haystack import connection_router, connections
 from haystack.backends import SQ
-from haystack.constants import DEFAULT_OPERATOR, ITERATOR_LOAD_PER_QUERY, REPR_OUTPUT_SIZE
+from haystack.constants import DEFAULT_OPERATOR, ITERATOR_LOAD_PER_QUERY
 from haystack.exceptions import NotHandled
 from haystack.inputs import AutoQuery, Raw
 from haystack.utils import log as logging
@@ -41,7 +41,6 @@ class SearchQuerySet(object):
         self.log = logging.getLogger('haystack')
 
     def _determine_backend(self):
-        from haystack import connections
         # A backend has been manually selected. Use it instead.
         if self._using is not None:
             self.query = connections[self._using].get_query()
@@ -54,10 +53,6 @@ class SearchQuerySet(object):
             hints['models'] = self.query.models
 
         backend_alias = connection_router.for_read(**hints)
-
-        if isinstance(backend_alias, (list, tuple)) and len(backend_alias):
-            # We can only effectively read from one engine.
-            backend_alias = backend_alias[0]
 
         # The ``SearchQuery`` might swap itself out for a different variant
         # here.
@@ -84,15 +79,10 @@ class SearchQuerySet(object):
         self.log = logging.getLogger('haystack')
 
     def __repr__(self):
-        data = list(self[:REPR_OUTPUT_SIZE])
-
-        if len(self) > REPR_OUTPUT_SIZE:
-            data[-1] = "...(remaining elements truncated)..."
-
-        return repr(data)
+        return u"<SearchQuerySet: query=%r, using=%r>" % (self.query, self._using)
 
     def __len__(self):
-        if not self._result_count:
+        if self._result_count is None:
             self._result_count = self.query.get_count()
 
             # Some backends give weird, false-y values here. Convert to zero.
@@ -359,10 +349,10 @@ class SearchQuerySet(object):
 
         return clone
 
-    def highlight(self):
+    def highlight(self, **kwargs):
         """Adds highlighting to the results."""
         clone = self._clone()
-        clone.query.add_highlight()
+        clone.query.add_highlight(**kwargs)
         return clone
 
     def models(self, *models):
@@ -561,6 +551,18 @@ class SearchQuerySet(object):
         else:
             clone = self._clone()
             return clone.query.get_stats()
+
+    def set_spelling_query(self, spelling_query):
+        """Set the exact text to be used to generate spelling suggestions
+
+        When making complicated queries, such as the alt parser mechanism
+        used by Solr dismax/edismax, this provides a convenient way to set
+        the a simple text string which will be used to generate spelling
+        suggestions without including unnecessary syntax.
+        """
+        clone = self._clone()
+        clone.query.set_spelling_query(spelling_query)
+        return clone
 
     def spelling_suggestion(self, preferred_query=None):
         """
