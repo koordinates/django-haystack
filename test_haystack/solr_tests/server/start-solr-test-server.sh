@@ -2,7 +2,7 @@
 
 set -e
 
-SOLR_VERSION=4.10.4
+SOLR_VERSION=5.5.4
 
 cd $(dirname $0)
 
