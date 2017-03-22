@@ -1108,7 +1108,7 @@ class LiveSolrSearchQuerySetTestCase(TestCase):
         fire_the_iterator_and_fill_cache = list(results)
         self.assertEqual(23, len(fire_the_iterator_and_fill_cache))
         self.assertEqual(results._cache_is_full(), True)
-        self.assertEqual(len(connections['solr'].queries), 4)
+        self.assertEqual(len(connections['solr'].queries), 3)
 
     def test_quotes_regression(self):
         sqs = self.sqs.auto_query(u"44°48'40''N 20°28'32''E")
